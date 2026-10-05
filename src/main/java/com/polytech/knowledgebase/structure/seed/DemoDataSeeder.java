@@ -25,7 +25,10 @@ public class DemoDataSeeder {
 
     public DemoDataSeeder(TopicRepository topics, StatementRepository statements,
                           SourceRepository sources, TopicRelationRepository relations) {
-        this.topics = topics; this.statements = statements; this.sources = sources; this.relations = relations;
+        this.topics = topics;
+        this.statements = statements;
+        this.sources = sources;
+        this.relations = relations;
     }
 
     @Transactional(rollbackFor = IOException.class)
@@ -55,19 +58,34 @@ public class DemoDataSeeder {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 new ClassPathResource("demo-statements.tsv").getInputStream(), StandardCharsets.UTF_8))) {
             for (String line; (line = reader.readLine()) != null;) {
-                if (line.isBlank() || line.startsWith("#")) continue;
+                if (line.isBlank() || line.startsWith("#")) {
+                    continue;
+                }
+
                 String[] row = line.split("\\t", -1);
-                if (row.length != 6) throw new IllegalStateException("Invalid demo row: " + line);
+                if (row.length != 6) {
+                    throw new IllegalStateException("Invalid demo row: " + line);
+                }
+
                 String id = "demo-" + row[0];
-                if (statements.existsById(id)) continue;
+                if (statements.existsById(id)) {
+                    continue;
+                }
+
                 Statement statement = new Statement(id, Objects.requireNonNull(catalog.get(row[1])),
                         row[3], StatementCategory.valueOf(row[2]), StatementStatus.DEMO);
-                if (!row[4].isBlank()) for (String name : row[4].split(",")) {
-                    ConditionKind kind = ConditionKind.valueOf(name);
-                    statement.addCondition(id + "-" + kind.name().toLowerCase(Locale.ROOT), kind, CONDITION_TEXT.get(kind));
+                if (!row[4].isBlank()) {
+                    for (String name : row[4].split(",")) {
+                        ConditionKind kind = ConditionKind.valueOf(name);
+                        statement.addCondition(id + "-" + kind.name().toLowerCase(Locale.ROOT), kind, CONDITION_TEXT.get(kind));
+                    }
                 }
-                if (!row[5].isBlank()) for (String reference : row[5].split(","))
-                    statement.addReference(Objects.requireNonNull(catalog.get(reference)));
+                if (!row[5].isBlank()) {
+                    for (String reference : row[5].split(",")) {
+                        statement.addReference(Objects.requireNonNull(catalog.get(reference)));
+                    }
+                }
+
                 statement.addEvidence(id + "-evidence", source, row[3], "Запись " + row[0]);
                 statements.save(statement);
             }
@@ -77,12 +95,16 @@ public class DemoDataSeeder {
     private Topic topic(String key, String name, TopicType type, String... synonyms) {
         return topics.findById("demo-topic-" + key).orElseGet(() -> {
             Topic topic = new Topic("demo-topic-" + key, name, type);
-            for (int i = 0; i < synonyms.length; i++) topic.addSynonym("demo-synonym-" + key + "-" + i, synonyms[i]);
+            for (int i = 0; i < synonyms.length; i++) {
+                topic.addSynonym("demo-synonym-" + key + "-" + i, synonyms[i]);
+            }
             return topics.save(topic);
         });
     }
     private void relation(String key, Topic from, Topic to, RelationType type) {
         String id = "demo-relation-" + key;
-        if (!relations.existsById(id)) relations.save(new TopicRelation(id, from, to, type));
+        if (!relations.existsById(id)) {
+            relations.save(new TopicRelation(id, from, to, type));
+        }
     }
 }

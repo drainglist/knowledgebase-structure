@@ -7,8 +7,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class StructureApplication {
 
 	public static void main(String[] args) {
-		try (var context = SpringApplication.run(StructureApplication.class, args)) {
-			// The console runner ends on exit or EOF; release the pool and JPA resources.
+		var context = SpringApplication.run(StructureApplication.class, args);
+
+		if ("none".equalsIgnoreCase(context.getEnvironment().getProperty("spring.main.web-application-type"))) {
+			context.close();
 		}
 	}
 
