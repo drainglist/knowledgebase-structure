@@ -45,13 +45,19 @@ public class KnowledgeAdminService {
     }
 
     public Dashboard dashboard() {
-        return new Dashboard(topics.count(), statements.count(), sources.count(),
-                countStatus(StatementStatus.CANDIDATE), countStatus(StatementStatus.VERIFIED),
-                countStatus(StatementStatus.DEMO), countStatus(StatementStatus.REJECTED));
-    }
+        Map<StatementStatus, Long> byStatus = new EnumMap<>(StatementStatus.class);
+        long total = 0;
+        for (Object[] row : statements.countGroupedByStatus()) {
+            long count = (Long) row[1];
+            byStatus.put((StatementStatus) row[0], count);
+            total += count;
+        }
 
-    private long countStatus(StatementStatus status) {
-        return statements.count((root, query, cb) -> cb.equal(root.get("status"), status));
+        return new Dashboard(topics.count(), total, sources.count(),
+                byStatus.getOrDefault(StatementStatus.CANDIDATE, 0L),
+                byStatus.getOrDefault(StatementStatus.VERIFIED, 0L),
+                byStatus.getOrDefault(StatementStatus.DEMO, 0L),
+                byStatus.getOrDefault(StatementStatus.REJECTED, 0L));
     }
 
     public PageDto<StatementDto> listStatements(StatementStatus status, String topicId, String queryText,

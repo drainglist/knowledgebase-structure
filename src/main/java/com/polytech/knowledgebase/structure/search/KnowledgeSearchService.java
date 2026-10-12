@@ -20,6 +20,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static com.polytech.knowledgebase.structure.search.SearchResult.ConditionView;
 import static com.polytech.knowledgebase.structure.search.SearchResult.ReviewView;
@@ -102,22 +104,19 @@ public class KnowledgeSearchService {
         List<StatementStatus> allowed = request.includeDemo()
                 ? List.of(StatementStatus.VERIFIED, StatementStatus.DEMO) : List.of(StatementStatus.VERIFIED);
 
-        List<Statement> candidates = statements.findSearchCandidates(primaryTopicIds, Set.of(topic.getId()),
-                        allowed, categories)
+        List<SearchCandidate> candidates = SearchCandidate.collect(
+                        statements.findSearchProjection(primaryTopicIds, Set.of(topic.getId()), allowed, categories))
                 .stream()
-                .filter(statement -> topic.getType() != TopicType.SPORT
-                        || statement.getTopic().getType() != TopicType.SPORT
-                        || statement.getTopic().getId().equals(topic.getId()))
-                .filter(statement -> compatible(statement, conditions))
+                .filter(candidate -> topic.getType() != TopicType.SPORT
+                        || candidate.topicType() != TopicType.SPORT
+                        || candidate.isTopic(topic.getId()))
+                .filter(candidate -> compatible(candidate, conditions))
                 .sorted(ranking(topic, matches, conditions))
                 .toList();
 
         long offset = (long) request.page() * request.size();
-        List<StatementView> result = candidates.stream()
-                .skip(offset)
-                .limit(request.size())
-                .map(statement -> snapshot(statement, topic, conditions))
-                .toList();
+        List<StatementView> result = page(topic, conditions,
+                candidates.stream().skip(offset).limit(request.size()).toList());
 
         String message = candidates.isEmpty() ? "Подходящих утверждений с допустимым статусом и условиями нет."
                 : result.isEmpty() ? "На этой странице нет результатов."
@@ -162,7 +161,7 @@ public class KnowledgeSearchService {
         Set<ConditionKind> hints = vocabulary.conditions(text);
         Set<ConditionKind> excluded = vocabulary.negatedConditions(text);
         Set<String> explicitDimensions = request.conditions().stream()
-                .map(ConditionKind::getDimension).collect(java.util.stream.Collectors.toSet());
+                .map(ConditionKind::getDimension).collect(Collectors.toSet());
         hints.removeIf(kind -> explicitDimensions.contains(kind.getDimension()));
         excluded.removeIf(kind -> explicitDimensions.contains(kind.getDimension()));
         hints.addAll(request.conditions());
@@ -174,9 +173,8 @@ public class KnowledgeSearchService {
     }
 
     // Unknown restrictions stay visible, while explicit conflicts are excluded.
-    private boolean compatible(Statement statement, QueryConditions query) {
-        for (StatementCondition condition : statement.getConditions()) {
-            ConditionKind kind = condition.getKind();
+    private boolean compatible(SearchCandidate candidate, QueryConditions query) {
+        for (ConditionKind kind : candidate.kinds()) {
             if (query.excluded().contains(kind)) {
                 return false;
             }
@@ -187,7 +185,7 @@ public class KnowledgeSearchService {
             }
 
             Double value = query.numeric().get(kind);
-            if (value != null && !inRange(value, condition)) {
+            if (value != null && !inRange(value, candidate, kind)) {
                 return false;
             }
         }
@@ -195,56 +193,79 @@ public class KnowledgeSearchService {
         return true;
     }
 
-    private boolean inRange(double value, StatementCondition condition) {
-        return (condition.getMinValue() == null || value >= condition.getMinValue())
-                && (condition.getMaxValue() == null || value <= condition.getMaxValue());
+    private boolean inRange(double value, SearchCandidate candidate, ConditionKind kind) {
+        Double minValue = candidate.minValues().get(kind);
+        Double maxValue = candidate.maxValues().get(kind);
+        return (minValue == null || value >= minValue) && (maxValue == null || value <= maxValue);
     }
 
-    private long matchingConditions(Statement statement, QueryConditions query) {
-        return statement.getConditions().stream().filter(condition -> query.hints().contains(condition.getKind())
-                || query.numeric().containsKey(condition.getKind())).count();
+    private long matchingConditions(SearchCandidate candidate, QueryConditions query) {
+        return candidate.kinds().stream().filter(kind -> query.hints().contains(kind)
+                || query.numeric().containsKey(kind)).count();
     }
 
-    private Comparator<Statement> ranking(Topic topic, List<Topic> matches, QueryConditions conditions) {
+    // Full objects are read only for the rows that reach the current page.
+    private List<StatementView> page(Topic topic, QueryConditions conditions, List<SearchCandidate> page) {
+        if (page.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, Statement> details = statements
+                .findPageWithDetails(page.stream().map(SearchCandidate::id).toList())
+                .stream()
+                .collect(Collectors.toMap(Statement::getId, Function.identity()));
+
+        List<StatementView> views = new ArrayList<>(page.size());
+        for (SearchCandidate candidate : page) {
+            Statement statement = details.get(candidate.id());
+            if (statement != null) {
+                views.add(snapshot(statement, candidate, topic, conditions));
+            }
+        }
+
+        return List.copyOf(views);
+    }
+
+    private Comparator<SearchCandidate> ranking(Topic topic, List<Topic> matches, QueryConditions conditions) {
         Set<String> secondaryTopics = matches.stream().filter(match -> !match.getId().equals(topic.getId()))
-                .map(Topic::getId).collect(java.util.stream.Collectors.toSet());
+                .map(Topic::getId).collect(Collectors.toSet());
 
-        return Comparator.<Statement>comparingInt(statement -> topicRank(statement, topic)).reversed()
-                .thenComparing(statement -> statement.getStatus() != StatementStatus.VERIFIED)
-                .thenComparing(Comparator.<Statement>comparingLong(statement -> matchingConditions(statement, conditions))
+        return Comparator.<SearchCandidate>comparingInt(candidate -> topicRank(candidate, topic)).reversed()
+                .thenComparing(candidate -> candidate.status() != StatementStatus.VERIFIED)
+                .thenComparing(Comparator.<SearchCandidate>comparingLong(candidate -> matchingConditions(candidate, conditions))
                         .reversed())
-                .thenComparing(Comparator.<Statement>comparingLong(statement -> statement.getReferencedTopics().stream()
-                        .filter(reference -> secondaryTopics.contains(reference.getId())).count()).reversed())
-                .thenComparing(Statement::getId);
+                .thenComparing(Comparator.<SearchCandidate>comparingLong(candidate -> candidate.referenceIds().stream()
+                        .filter(secondaryTopics::contains).count()).reversed())
+                .thenComparing(SearchCandidate::id);
     }
 
-    private int topicRank(Statement statement, Topic topic) {
-        if (statement.getTopic().getId().equals(topic.getId())) {
+    private int topicRank(SearchCandidate candidate, Topic topic) {
+        if (candidate.isTopic(topic.getId())) {
             return 3;
         }
 
-        return statement.getReferencedTopics().stream().anyMatch(reference -> reference.getId().equals(topic.getId()))
-                ? 2 : 1;
+        return candidate.references(topic.getId()) ? 2 : 1;
     }
 
-    private String matchReason(Statement statement, Topic topic) {
-        return switch (topicRank(statement, topic)) {
+    private String matchReason(SearchCandidate candidate, Topic topic) {
+        return switch (topicRank(candidate, topic)) {
             case 3 -> "Основная тема совпадает: " + topic.getName();
             case 2 -> "Утверждение ссылается на тему: " + topic.getName();
             default -> "Основная тема связана с «" + topic.getName() + "»";
         };
     }
 
-    private String applicability(Statement statement, QueryConditions conditions) {
-        if (statement.getConditions().isEmpty()) {
+    private String applicability(SearchCandidate candidate, QueryConditions conditions) {
+        if (candidate.kinds().isEmpty()) {
             return "UNSPECIFIED";
         }
 
-        return matchingConditions(statement, conditions) == statement.getConditions().size()
+        return matchingConditions(candidate, conditions) == candidate.kinds().size()
                 ? "MATCHED" : "CONDITIONAL";
     }
 
-    private StatementView snapshot(Statement statement, Topic topic, QueryConditions conditions) {
+    private StatementView snapshot(Statement statement, SearchCandidate candidate, Topic topic,
+                                   QueryConditions conditions) {
         ReviewView review = statement.getReviewedAt() == null ? null
                 : new ReviewView(statement.getReviewedBy(), statement.getReviewedAt(), statement.getReviewNote());
 
@@ -256,7 +277,7 @@ public class KnowledgeSearchService {
                 topicView(statement.getTopic()), statement.getReferencedTopics().stream().map(this::topicView).toList(),
                 statement.getConditions().stream().map(condition -> new ConditionView(condition.getKind(),
                         condition.getText(), condition.getMinValue(), condition.getMaxValue(), condition.getUnit())).toList(),
-                matchReason(statement, topic), applicability(statement, conditions), review);
+                matchReason(candidate, topic), applicability(candidate, conditions), review);
     }
 
     private TopicView topicView(Topic topic) {
