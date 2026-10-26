@@ -33,3 +33,6 @@ build/
 .vscode/
 .env
 .env.*
+
+# Local database archives can contain private source material.
+/backups/
